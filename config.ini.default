@@ -1,0 +1,6 @@
+[arpspoof]
+; only one field you need fill
+ip =
+mac =
+interval =
+blocktime =
