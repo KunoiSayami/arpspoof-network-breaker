@@ -2,7 +2,7 @@
 # main.py
 # Copyright (C) 2018 Too-Naive
 #
-# This module is part of arpspoof-network-breaking and is released under
+# This module is part of arpspoof-network-breaker and is released under
 # the AGPL v3 License: https://www.gnu.org/licenses/agpl-3.0.txt
 #
 # This program is free software: you can redistribute it and/or modify
@@ -61,6 +61,7 @@ class arpspoof_class(object):
 			print(netifaces.gateways())
 			raise ValueError('Gateway ip error')
 		self.sleep_time = int(sleep_time)
+		self.current_sleep_time = self.sleep_time
 		self.arp_blocktime = int(arp_blocktime)
 		self.random_time = int(random_time)
 	def get_ip_from_mac(self):
@@ -108,12 +109,13 @@ class arpspoof_class(object):
 		spoof.send_signal(signal.SIGINT)
 		printl('Wait arpspoof to exit (fix connection)')
 		spoof.wait()
-		printl('Exited!(sleep for {}{})'.format(self.sleep_time, '' if self.random_time == 0 else 'Randomization'))
+		self.current_sleep_time = self.get_random_time(self.sleep_time, self.random_time)
+		printl('Exited!(sleep {}(s))'.format(self.current_sleep_time))
 	def main_activity(self):
 		while True:
 			try:
 				self.main_spoof()
-				time.sleep(self.get_random_time(self.sleep_time, self.random_time))
+				time.sleep(self.current_sleep_time)
 			except KeyboardInterrupt:
 				while True:
 					try:
