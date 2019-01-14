@@ -40,10 +40,14 @@ def vaildate_ip(ip_addr: str):
 		return False
 	return True
 
+mcb = False
+
 if len(sys.argv) == 1:
 	config = ConfigParser()
 	if len(config.read('config.ini')) == 0 or not config.has_section('arpspoof') or not (config.has_option('arpspoof', 'mac') or config.has_option('arpsoof', 'ip')):
 		raise FileNotFoundError('Cannot find configure file')
+else:
+	mcb = True
 
 class interface(object):
 	def __init__(self, interface: str):
@@ -78,14 +82,20 @@ class interface(object):
 		
 class arpcfg(object):
 	def __init__(self, cfgstr: str):
+		print(cfgstr)
 		self.ip, self.mac, self.interface, self.gateway = cfgstr.split('\\n')
 
 class arp_class(object):
-	def __init__(self, mac_addr: str = '', ip: str = ''):
+	def __init__(self, mac_addr: str = '', ip: str = '', cli: bool = False):
 		''' Define interface process sproof '''
 		self.target_interface = None
+		if cli == True:
+			pass
 		self.mac = mac_addr
 		self.ip = ip
+		self.interval = int(config['arpspoof']['interval'])
+		self.blocktime = int(config['arpspoof']['blocktime'])
+		self.randomtime = int(config['arpspoof']['random_time'])
 		self.vaildate()
 		# TODO: TBD thread search
 		self.interfaces = {name: interface(name) for name in netifaces.interfaces() if not any(name.startswith(x) for x in ('lo', 'docker'))}
@@ -132,7 +142,7 @@ class arp_class(object):
 		try:
 			with open(file_name) as fin:
 				r = fin.readlines()
-			l = map(arpcfg, (r if '\n' not in r else r[:-1] for x in r))
+			l = map(arpcfg, (x if '\n' not in x else x[:-1] for x in r))
 			for x in l:
 				if self.check(x.ip, x.mac, x.interface):
 					self.target_interface = self.interfaces(x.interface)
@@ -153,7 +163,7 @@ class arp_class(object):
 				printl('Start spoof')
 				ctrlsub.runable(['arpspoof', '-i', self.target_interface.interface, '-t', self.target_interface.gateway, '-r', self.ip], 10, exit_msg = 'Wait arpspoof to exit (fix connection)')
 				printl('Stopped')
-				time.sleep(60)
+				time.sleep(self.interval)
 			except KeyboardInterrupt:
 				while True:
 					try:
@@ -171,7 +181,7 @@ class arp_class(object):
 def main():
 	mac = config['arpspoof']['mac'] if config.has_option('arpspoof', 'mac') and config['arpspoof']['mac'] != '' else ''
 	ip = config['arpspoof']['ip'] if config.has_option('arpspoof', 'ip') and config['arpspoof']['ip'] != '' else ''
-	arp_class(mac, ip).call()
+	arp_class(mac, ip, mcb).call()
 
 if __name__ == "__main__":
 	main()
