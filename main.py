@@ -26,6 +26,7 @@ import netifaces
 import subprocess
 import sys
 import operator
+import random
 
 mac_match = re.compile(r'^(([0-9a-f]){2}[:-]){5}([0-9a-f]{2})$')
 ip_match = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
@@ -161,9 +162,9 @@ class arp_class(object):
 		while True:
 			try:
 				printl('Start spoof')
-				ctrlsub.runable(['arpspoof', '-i', self.target_interface.interface, '-t', self.target_interface.gateway, '-r', self.ip], 10, exit_msg = 'Wait arpspoof to exit (fix connection)')
+				ctrlsub.runable(['arpspoof', '-i', self.target_interface.interface, '-t', self.target_interface.gateway, '-r', self.ip], self.get_rand_sleep(), exit_msg = 'Wait arpspoof to exit (fix connection)')
 				printl('Stopped')
-				time.sleep(self.interval)
+				time.sleep(self.get_rand_interval())
 			except KeyboardInterrupt:
 				while True:
 					try:
@@ -177,6 +178,10 @@ class arp_class(object):
 				import traceback
 				print(self.ip, self.mac, self.interfaces)
 				traceback.print_exc()
+	def get_rand_sleep(self):
+		return self.blocktime if self.randomtime == 0 else self.blocktime + random.randint(-self.blocktime, self.blocktime)
+	def get_rand_interval(self):
+		return self.interval if self.randomtime == 0 else self.interval + random.randint(-self.randomtime, self.randomtime)
 
 def main():
 	mac = config['arpspoof']['mac'] if config.has_option('arpspoof', 'mac') and config['arpspoof']['mac'] != '' else ''
