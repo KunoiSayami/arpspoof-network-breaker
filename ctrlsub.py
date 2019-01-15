@@ -22,9 +22,13 @@ import time
 from typing import List
 import signal
 
-def runable(cmd: list, sleep_time: int or float, wait: bool = False, exit_msg: str = ''):
+def runable(cmd: list, sleep_time: int or float, wait: bool = False, start_msg: str = '', exit_msg: str = '', after_wait_msg: str = ''):
+	if start_msg != '':
+		print('{}: {}'.format(time.strftime('%Y-%m-%d %H:%M:%S'), start_msg))
 	sub = subprocess.Popen(cmd)
 	time.sleep(sleep_time)
 	sub.send_signal(signal.SIGINT)
 	if exit_msg != '': print('{}: {}'.format(time.strftime('%Y-%m-%d %H:%M:%S'), exit_msg))
-	if wait: sub.wait()
+	if wait:
+		sub.wait()
+		if after_wait_msg != '': print('{}: {}'.format(time.strftime('%Y-%m-%d %H:%M:%S'), after_wait_msg))

